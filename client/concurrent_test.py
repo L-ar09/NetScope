@@ -7,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 from client.tcp_echo_client import DEFAULT_HOST, DEFAULT_PORT, echo
+from monitoring.logger import MetricsLogger
 
 
 @dataclass(frozen=True)
@@ -18,7 +19,12 @@ class ConcurrentResult:
     error: str = ""
 
 
-def run_concurrent_echoes(client_count: int, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> list[ConcurrentResult]:
+def run_concurrent_echoes(
+    client_count: int,
+    host: str = DEFAULT_HOST,
+    port: int = DEFAULT_PORT,
+    logger: MetricsLogger | None = None,
+) -> list[ConcurrentResult]:
     """Send one unique echo request from each client thread."""
     if client_count < 1:
         raise ValueError("client_count must be at least 1")
@@ -26,7 +32,7 @@ def run_concurrent_echoes(client_count: int, host: str = DEFAULT_HOST, port: int
     def run_one(client_id: int) -> ConcurrentResult:
         message = f"NetScope concurrent client {client_id}"
         try:
-            response, response_ms = echo(message, host, port)
+            response, response_ms = echo(message, host, port, logger=logger, client_id=f"concurrent_{client_id}")
             if response != message:
                 return ConcurrentResult(client_id, message, response_ms, False, "Echo response mismatch")
             return ConcurrentResult(client_id, message, response_ms, True)
@@ -48,7 +54,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
 
-    results = run_concurrent_echoes(args.clients, args.host, args.port)
+    results = run_concurrent_echoes(args.clients, args.host, args.port, logger=MetricsLogger())
     for result in results:
         state = "SUCCESS" if result.success else f"FAILED: {result.error}"
         print(f"Client {result.client_id}: {state} ({result.response_ms:.2f} ms)")

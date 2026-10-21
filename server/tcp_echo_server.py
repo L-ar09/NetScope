@@ -5,7 +5,11 @@ from __future__ import annotations
 import argparse
 import socket
 import threading
+import time
+import uuid
 from collections.abc import Callable
+
+from monitoring.logger import MetricsLogger
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5001
@@ -15,11 +19,12 @@ BUFFER_SIZE = 4096
 class TCPEchoServer:
     """Small stoppable TCP echo server suitable for local experiments and tests."""
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> None:
+    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, logger: MetricsLogger | None = None) -> None:
         self.host = host
         self.port = port
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
+        self.logger = logger
 
     @property
     def address(self) -> tuple[str, int]:
@@ -51,14 +56,30 @@ class TCPEchoServer:
                     target=self._handle_client, args=(connection,), daemon=True
                 ).start()
 
-    @staticmethod
-    def _handle_client(connection: socket.socket) -> None:
+    def _handle_client(self, connection: socket.socket) -> None:
         with connection:
             while True:
                 data = connection.recv(BUFFER_SIZE)
                 if not data:
                     return
-                connection.sendall(data)
+                start = time.perf_counter()
+                request_id = str(uuid.uuid4())
+                try:
+                    connection.sendall(data)
+                    if self.logger:
+                        self.logger.log(
+                            request_id=request_id, actor="server", protocol="TCP", service="echo",
+                            status="success", response_ms=round((time.perf_counter() - start) * 1000, 3),
+                            bytes_transferred=len(data), client_id="",
+                        )
+                except OSError as error:
+                    if self.logger:
+                        self.logger.log(
+                            request_id=request_id, actor="server", protocol="TCP", service="echo",
+                            status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
+                            bytes_transferred=len(data), client_id="", error_type=type(error).__name__,
+                        )
+                    return
 
     def shutdown(self) -> None:
         """Stop accepting connections without requiring a process signal."""
@@ -72,7 +93,7 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
-    TCPEchoServer(args.host, args.port).serve_forever()
+    TCPEchoServer(args.host, args.port, logger=MetricsLogger()).serve_forever()
 
 
 if __name__ == "__main__":

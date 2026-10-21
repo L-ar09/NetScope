@@ -71,6 +71,18 @@ The concurrent-client runner creates multiple TCP echo clients in parallel. Each
 - Runner: `client/concurrent_test.py`
 - Default workload: five simultaneous clients
 
+### Structured metrics and performance summary
+
+Each command-line client records one structured CSV row in `data/metrics.csv`. Server processes also record their handling results when started from the command line. Records include a request identifier, timestamp, actor, protocol, service, status, application response time, transferred bytes, throughput, and any error type.
+
+Use the metrics summary command after running one or more clients:
+
+```powershell
+python -m monitoring.metrics
+```
+
+It reports total requests, successful and timed-out requests, success and timeout rates, average response time, and average transfer throughput. These values are application-level measurements; they are not packet-level Wireshark measurements.
+
 ## Project structure
 
 ```text
@@ -81,7 +93,7 @@ NetScope/
 │   ├── dns_records.json    # Simulated lookup records
 │   ├── uploads/            # Files received by the TCP file server
 │   └── captures/           # Reserved for Wireshark packet captures
-├── monitoring/             # Reserved for metrics and structured logs
+├── monitoring/             # Structured CSV logging and performance summaries
 ├── dashboard/              # Reserved for Streamlit visualizations
 ├── tests/                  # Automated loopback integration tests
 ├── requirements.txt        # Python dependencies
@@ -159,7 +171,6 @@ The test suite uses real loopback sockets and verifies:
 
 The repository includes dedicated locations for the following capabilities:
 
-- structured request logs, latency measurements, and throughput metrics;
 - Wireshark capture files and packet-level observations;
 - configurable delay, response-drop, incorrect-lookup, and disconnect experiments;
 - a Streamlit dashboard for charts, diagnostics, and service comparisons.

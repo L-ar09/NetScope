@@ -8,8 +8,12 @@ import json
 import socket
 import struct
 import threading
+import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
+
+from monitoring.logger import MetricsLogger
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5002
@@ -62,12 +66,14 @@ class TCPFileServer:
         host: str = DEFAULT_HOST,
         port: int = DEFAULT_PORT,
         upload_dir: Path = DEFAULT_UPLOAD_DIR,
+        logger: MetricsLogger | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.upload_dir = Path(upload_dir)
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
+        self.logger = logger
 
     @property
     def address(self) -> tuple[str, int]:
@@ -108,8 +114,12 @@ class TCPFileServer:
 
     def _handle_client(self, connection: socket.socket, peer: tuple[str, int]) -> None:
         with connection:
+            start = time.perf_counter()
+            request_id = str(uuid.uuid4())
+            file_size = 0
             try:
                 metadata = _receive_metadata(connection)
+                request_id = str(metadata.get("request_id") or request_id)
                 filename = str(metadata.get("filename", ""))
                 file_size = metadata.get("size")
                 expected_hash = str(metadata.get("sha256", ""))
@@ -139,8 +149,25 @@ class TCPFileServer:
                         "sha256": actual_hash,
                     },
                 )
+                if self.logger:
+                    elapsed_seconds = time.perf_counter() - start
+                    self.logger.log(
+                        request_id=request_id, actor="server", protocol="TCP", service="file_transfer",
+                        status="success" if integrity_ok else "failed",
+                        response_ms=round(elapsed_seconds * 1000, 3), bytes_transferred=file_size,
+                        throughput_mbps=round((file_size * 8 / elapsed_seconds) / 1_000_000, 6) if elapsed_seconds else 0,
+                        client_id="", error_type="" if integrity_ok else "integrity_failed",
+                    )
                 print(f"Received {destination.name} ({file_size} bytes) from {peer[0]}:{peer[1]}", flush=True)
             except (ConnectionError, OSError, ValueError, json.JSONDecodeError, struct.error) as error:
+                if self.logger:
+                    elapsed_seconds = time.perf_counter() - start
+                    self.logger.log(
+                        request_id=request_id, actor="server", protocol="TCP", service="file_transfer",
+                        status="failed", response_ms=round(elapsed_seconds * 1000, 3),
+                        bytes_transferred=file_size if isinstance(file_size, int) else 0,
+                        client_id="", error_type=type(error).__name__,
+                    )
                 try:
                     _send_json(connection, {"status": "error", "error": str(error)})
                 except OSError:
@@ -158,7 +185,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--upload-dir", type=Path, default=DEFAULT_UPLOAD_DIR)
     args = parser.parse_args()
-    TCPFileServer(args.host, args.port, args.upload_dir).serve_forever()
+    TCPFileServer(args.host, args.port, args.upload_dir, logger=MetricsLogger()).serve_forever()
 
 
 if __name__ == "__main__":
