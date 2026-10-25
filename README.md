@@ -83,6 +83,54 @@ python -m monitoring.metrics
 
 It reports total requests, successful and timed-out requests, success and timeout rates, average response time, and average transfer throughput. These values are application-level measurements; they are not packet-level Wireshark measurements.
 
+### Packet capture and forensics
+
+NetScope supports packet-level evidence through Wireshark or its optional command-line companion, `tshark`. Capture files belong in `data/captures/`. The packet analyzer summarizes exported observations without claiming that an application timeout proves packet loss.
+
+- Capture automation: `monitoring/capture.py`
+- Packet CSV analyzer: `monitoring/packet_analyzer.py`
+- Capture directory: `data/captures/`
+
+## Packet capture workflow
+
+Install Wireshark with Npcap loopback capture support if it is not already installed. Select the Npcap Loopback Adapter when NetScope services and clients run on the same computer.
+
+1. Start a capture before running a NetScope client.
+2. Run the relevant server and client request.
+3. Apply the display filter for the service.
+4. Inspect the resulting packets, then save the capture under `data/captures/`.
+
+| Service | Wireshark display filter | What to inspect |
+| --- | --- | --- |
+| TCP echo | `tcp.port == 5001` | SYN, SYN-ACK, ACK, payload, and connection termination |
+| TCP file transfer | `tcp.port == 5002` | TCP segments, acknowledgements, sequence progression, and termination |
+| UDP lookup | `udp.port == 5003` | Request and response datagrams; UDP has no TCP handshake |
+
+Useful TCP-specific filters are `tcp.flags.syn == 1`, `tcp.analysis.retransmission`, and `tcp.analysis.ack_rtt`.
+
+### Optional tshark automation
+
+If `tshark` is installed and available on your `PATH`, list capture interfaces:
+
+```powershell
+python -m monitoring.capture --list-interfaces
+```
+
+Capture 15 seconds of TCP echo traffic, replacing `1` with the loopback interface identifier returned above:
+
+```powershell
+python -m monitoring.capture --capture .\data\captures\tcp_echo.pcapng --interface 1 --capture-filter "tcp port 5001" --duration 15
+```
+
+Export selected packet fields to CSV and summarize them:
+
+```powershell
+python -m monitoring.capture --export .\data\captures\tcp_echo.pcapng --output .\data\captures\tcp_echo_observations.csv --display-filter "tcp.port == 5001"
+python -m monitoring.packet_analyzer .\data\captures\tcp_echo_observations.csv
+```
+
+If `tshark` is unavailable, use the manual Wireshark workflow above. The project still works normally; only optional capture automation is unavailable.
+
 ## Project structure
 
 ```text
@@ -93,7 +141,7 @@ NetScope/
 │   ├── dns_records.json    # Simulated lookup records
 │   ├── uploads/            # Files received by the TCP file server
 │   └── captures/           # Reserved for Wireshark packet captures
-├── monitoring/             # Structured CSV logging and performance summaries
+├── monitoring/             # Metrics, capture automation, and packet analysis
 ├── dashboard/              # Reserved for Streamlit visualizations
 ├── tests/                  # Automated loopback integration tests
 ├── requirements.txt        # Python dependencies
@@ -156,8 +204,7 @@ Change `5` to test a different number of simultaneous clients.
 Run the automated integration tests with:
 
 ```powershell
-New-Item -ItemType Directory -Force .\tmp | Out-Null
-python -m pytest --basetemp .\tmp\pytest
+python -m pytest
 ```
 
 The test suite uses real loopback sockets and verifies:
@@ -171,7 +218,6 @@ The test suite uses real loopback sockets and verifies:
 
 The repository includes dedicated locations for the following capabilities:
 
-- Wireshark capture files and packet-level observations;
 - configurable delay, response-drop, incorrect-lookup, and disconnect experiments;
 - a Streamlit dashboard for charts, diagnostics, and service comparisons.
 

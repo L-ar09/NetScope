@@ -4,4 +4,10 @@ __pycache__/
 .pytest_cache/
 *.py[cod]
 tmp/
-Hello.txt
+test-artifacts/
+tests/_artifacts/
+data/metrics.csv
+data/captures/*
+!data/captures/.gitkeep
+data/uploads/*
+!data/uploads/.gitkeep
