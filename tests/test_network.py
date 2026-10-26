@@ -5,6 +5,7 @@ from __future__ import annotations
 import threading
 import time
 import uuid
+import csv
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ from client.concurrent_test import run_concurrent_echoes
 from client.tcp_file_client import transfer_file
 from client.tcp_echo_client import echo
 from client.udp_lookup_client import lookup
-from monitoring.logger import MetricsLogger
+from monitoring.logger import FIELDS, MetricsLogger
 from monitoring.diagnosis import diagnose
 from monitoring.metrics import load_metrics, summarize
 from monitoring.packet_analyzer import load_packet_observations, summarize_packets
@@ -136,6 +137,48 @@ def test_client_and_server_write_structured_metrics() -> None:
         time.sleep(0.01)
         rows = load_metrics(log_path)
     assert {row["actor"] for row in rows} == {"client", "server"}
+    assert len({row["request_id"] for row in rows}) == 1
+
+
+def test_independent_loggers_write_one_header_and_complete_rows() -> None:
+    log_path = artifact_directory("concurrent_loggers") / "metrics.csv"
+    loggers = [MetricsLogger(log_path) for _ in range(20)]
+    threads = [
+        threading.Thread(
+            target=logger.log,
+            kwargs={"actor": "client", "protocol": "TCP", "service": "echo", "status": "success"},
+        )
+        for logger in loggers
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=2)
+
+    with log_path.open(newline="", encoding="utf-8") as source:
+        csv_rows = list(csv.reader(source))
+    assert csv_rows[0] == FIELDS
+    assert len(csv_rows) == len(loggers) + 1
+    assert all(len(row) == len(FIELDS) for row in csv_rows)
+
+
+def test_logger_repairs_duplicate_header_and_incomplete_legacy_row() -> None:
+    log_path = artifact_directory("repair_metrics") / "metrics.csv"
+    valid_row = ["2026-01-01T00:00:00+00:00", "request-1", "client", "TCP", "echo", "success"] + [""] * 7
+    with log_path.open("w", newline="", encoding="utf-8") as destination:
+        writer = csv.writer(destination)
+        writer.writerow(FIELDS)
+        writer.writerow(valid_row)
+        writer.writerow(FIELDS)
+        writer.writerow(["none", "false", ""])
+
+    MetricsLogger(log_path).log(actor="client", protocol="UDP", service="lookup", status="success")
+
+    with log_path.open(newline="", encoding="utf-8") as source:
+        csv_rows = list(csv.reader(source))
+    assert csv_rows[0] == FIELDS
+    assert len(csv_rows) == 3
+    assert all(len(row) == len(FIELDS) for row in csv_rows)
 
 
 def test_packet_export_summary_counts_handshake_udp_and_retransmission() -> None:

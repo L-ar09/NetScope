@@ -27,7 +27,7 @@ python -m pytest
 Expected result:
 
 ```text
-7 passed
+10 passed
 ```
 
 ## TCP echo service
@@ -204,6 +204,18 @@ python -m monitoring.diagnosis
 ```
 
 Important: a simulated UDP response drop means the application deliberately did not reply. It is not proof that a network packet was lost. Use a matching `.pcapng` capture when making packet-level conclusions.
+
+## Dashboard
+
+After producing application metrics or packet-export CSV files, start the local dashboard:
+
+```powershell
+python -m streamlit run dashboard/app.py
+```
+
+Open the local address printed by Streamlit, normally `http://localhost:8501`. The dashboard shows client request counts, success rate, application response-time charts, file-transfer throughput, diagnostic findings, and summaries for capture CSV files in `data\captures\`.
+
+The **Fault controls** section edits `data\fault_config.json`. Save a configuration, run a new request, and use **Refresh data** to see its recorded outcome. Restore all fault values to zero or `false` after an experiment.
 
 ## TShark capture
 

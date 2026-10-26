@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 import threading
 import time
@@ -15,6 +16,22 @@ from server.fault_injector import FaultInjector
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5001
 BUFFER_SIZE = 4096
+
+
+def _decode_request(data: bytes) -> tuple[str, str, str, bool]:
+    """Decode a NetScope envelope while retaining support for raw echo data."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("netscope") == "echo":
+            return (
+                str(payload.get("message", "")),
+                str(payload.get("request_id") or uuid.uuid4()),
+                str(payload.get("client_id", "")),
+                True,
+            )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return data.decode("utf-8", errors="replace"), str(uuid.uuid4()), "", False
 
 
 class TCPEchoServer:
@@ -68,7 +85,8 @@ class TCPEchoServer:
                 if not data:
                     return
                 start = time.perf_counter()
-                request_id = str(uuid.uuid4())
+                message, request_id, client_id, structured = _decode_request(data)
+                message_bytes = message.encode("utf-8")
                 settings = self.fault_injector.settings()
                 fault_type = self.fault_injector.fault_type(settings, "echo")
                 try:
@@ -78,16 +96,20 @@ class TCPEchoServer:
                             self.logger.log(
                                 request_id=request_id, actor="server", protocol="TCP", service="echo",
                                 status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                                bytes_transferred=len(data), client_id="", fault_type="tcp_disconnect",
+                                bytes_transferred=len(message_bytes), client_id=client_id, fault_type="tcp_disconnect",
                                 fault_enabled=True, error_type="simulated_disconnect",
                             )
                         return
-                    connection.sendall(data)
+                    response = (
+                        json.dumps({"netscope": "echo", "request_id": request_id, "message": message}).encode("utf-8") + b"\n"
+                        if structured else data
+                    )
+                    connection.sendall(response)
                     if self.logger:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="TCP", service="echo",
                             status="success", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="", fault_type=fault_type,
+                            bytes_transferred=len(message_bytes), client_id=client_id, fault_type=fault_type,
                             fault_enabled=settings.enabled,
                         )
                 except OSError as error:
@@ -95,7 +117,7 @@ class TCPEchoServer:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="TCP", service="echo",
                             status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="", error_type=type(error).__name__,
+                            bytes_transferred=len(message_bytes), client_id=client_id, error_type=type(error).__name__,
                             fault_type=fault_type, fault_enabled=settings.enabled,
                         )
                     return

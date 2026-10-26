@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import socket
 import time
 import uuid
@@ -22,8 +23,11 @@ def lookup(
     client_id: str = "udp_lookup_client",
 ) -> tuple[str, float]:
     """Look up a simulated domain and return its answer plus response time in milliseconds."""
-    payload = domain.strip().encode("utf-8")
     request_id = str(uuid.uuid4())
+    normalized_domain = domain.strip()
+    payload = json.dumps(
+        {"netscope": "lookup", "request_id": request_id, "domain": normalized_domain, "client_id": client_id}
+    ).encode("utf-8")
     start = time.perf_counter()
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
@@ -37,7 +41,12 @@ def lookup(
                 status="success", response_ms=round(elapsed_ms, 3),
                 bytes_transferred=len(payload), client_id=client_id,
             )
-        return response.decode("utf-8"), elapsed_ms
+        reply = json.loads(response.decode("utf-8"))
+        if not isinstance(reply, dict) or reply.get("netscope") != "lookup":
+            raise ConnectionError("Invalid UDP lookup response")
+        if reply.get("request_id") != request_id:
+            raise ConnectionError("UDP lookup response request ID did not match")
+        return str(reply.get("answer", "")), elapsed_ms
     except TimeoutError as error:
         elapsed_ms = (time.perf_counter() - start) * 1000
         if logger:

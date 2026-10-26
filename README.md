@@ -182,7 +182,7 @@ NetScope/
 │   ├── uploads/            # Files received by the TCP file server
 │   └── captures/           # Reserved for Wireshark packet captures
 ├── monitoring/             # Metrics, capture automation, and packet analysis
-├── dashboard/              # Reserved for Streamlit visualizations
+├── dashboard/              # Streamlit monitoring and experiment dashboard
 ├── tests/                  # Automated loopback integration tests
 ├── requirements.txt        # Python dependencies
 └── README.md               # Project documentation
@@ -256,12 +256,24 @@ The test suite uses real loopback sockets and verifies:
 
 For all copy-paste service, failure, capture, export, and Wireshark commands, see [TESTING.md](TESTING.md).
 
+## Dashboard
+
+The optional local Streamlit dashboard reads NetScope's generated metrics and packet-export CSV files. It provides application-health indicators, response-time and throughput charts, the diagnostic findings, a packet summary, and controls for `data/fault_config.json`.
+
+Start it from the project root after activating the virtual environment:
+
+```powershell
+python -m streamlit run dashboard/app.py
+```
+
+Streamlit prints a local URL, normally `http://localhost:8501`, which you can open in a browser. Start a service and run one or more clients before refreshing the dashboard so that it has metrics to display.
+
 ## Planned extensions
 
 The repository includes dedicated locations for the following capabilities:
 
 - configurable delay, response-drop, incorrect-lookup, and disconnect experiments;
-- a Streamlit dashboard for charts, diagnostics, and service comparisons.
+- optional experiment automation and live capture refresh.
 
 ## Important terminology
 

@@ -26,6 +26,22 @@ def load_records(path: Path = RECORDS_PATH) -> dict[str, str]:
     return {str(name).lower(): str(address) for name, address in raw_records.items()}
 
 
+def _decode_lookup_request(data: bytes) -> tuple[str, str, str, bool]:
+    """Decode a NetScope lookup envelope while retaining raw UDP support."""
+    try:
+        payload = json.loads(data.decode("utf-8"))
+        if isinstance(payload, dict) and payload.get("netscope") == "lookup":
+            return (
+                str(payload.get("domain", "")).strip().lower(),
+                str(payload.get("request_id") or uuid.uuid4()),
+                str(payload.get("client_id", "")),
+                True,
+            )
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        pass
+    return data.decode("utf-8", errors="replace").strip().lower(), str(uuid.uuid4()), "", False
+
+
 class UDPLookupServer:
     """Stoppable UDP request/response server using static local records."""
 
@@ -63,9 +79,8 @@ class UDPLookupServer:
                     continue
                 except OSError:
                     break
-                domain = data.decode("utf-8", errors="replace").strip().lower()
+                domain, request_id, client_id, structured = _decode_lookup_request(data)
                 start = time.perf_counter()
-                request_id = str(uuid.uuid4())
                 settings = self.fault_injector.settings()
                 fault_type = self.fault_injector.fault_type(settings, "lookup")
                 self.fault_injector.apply_delay(settings)
@@ -74,19 +89,23 @@ class UDPLookupServer:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="UDP", service="lookup",
                             status="no_response", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="", fault_type="udp_response_drop",
+                            bytes_transferred=len(domain.encode("utf-8")), client_id=client_id, fault_type="udp_response_drop",
                             fault_enabled=True,
                         )
                     print(f"Lookup dropped by fault injector: {domain or '<empty>'}", flush=True)
                     continue
                 answer = self.fault_injector.resolve_lookup(domain, self.records, settings)
                 try:
-                    server.sendto(answer.encode("utf-8"), peer)
+                    response = (
+                        json.dumps({"netscope": "lookup", "request_id": request_id, "answer": answer}).encode("utf-8")
+                        if structured else answer.encode("utf-8")
+                    )
+                    server.sendto(response, peer)
                     if self.logger:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="UDP", service="lookup",
                             status="success", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="", fault_type=fault_type,
+                            bytes_transferred=len(domain.encode("utf-8")), client_id=client_id, fault_type=fault_type,
                             fault_enabled=settings.enabled,
                         )
                 except OSError as error:
@@ -94,7 +113,7 @@ class UDPLookupServer:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="UDP", service="lookup",
                             status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="", error_type=type(error).__name__,
+                            bytes_transferred=len(domain.encode("utf-8")), client_id=client_id, error_type=type(error).__name__,
                             fault_type=fault_type, fault_enabled=settings.enabled,
                         )
                     continue
