@@ -83,6 +83,34 @@ python -m monitoring.metrics
 
 It reports total requests, successful and timed-out requests, success and timeout rates, average response time, and average transfer throughput. These values are application-level measurements; they are not packet-level Wireshark measurements.
 
+### Configurable fault injection and diagnosis
+
+NetScope can reproduce controlled, application-level failures through `data/fault_config.json`. Each server reloads this JSON file before handling a request, so changes take effect without restarting a service. Its default configuration leaves every fault disabled.
+
+```json
+{
+  "delay_ms": 0,
+  "udp_drop_probability": 0.0,
+  "wrong_lookup": false,
+  "tcp_disconnect": false
+}
+```
+
+| Setting | Affected service | Result |
+| --- | --- | --- |
+| `delay_ms` | TCP echo, TCP file transfer, UDP lookup | Adds an application-level server delay. |
+| `udp_drop_probability` | UDP lookup | Server intentionally sends no response for the selected share of requests. |
+| `wrong_lookup` | UDP lookup | Server returns `192.0.2.99` instead of the configured record. |
+| `tcp_disconnect` | TCP echo, TCP file transfer | Server closes the connection before a normal reply. |
+
+The rule-based diagnostic tool reads `data/metrics.csv` and reports observed symptoms, supporting evidence, probable cause, and a suggested corrective action:
+
+```powershell
+python -m monitoring.diagnosis
+```
+
+An application timeout is never labelled as proven packet loss. Use the matching Wireshark/TShark capture as packet-level evidence.
+
 ### Packet capture and forensics
 
 NetScope supports packet-level evidence through Wireshark or its optional command-line companion, `tshark`. Capture files belong in `data/captures/`. The packet analyzer summarizes exported observations without claiming that an application timeout proves packet loss.
@@ -90,6 +118,8 @@ NetScope supports packet-level evidence through Wireshark or its optional comman
 - Capture automation: `monitoring/capture.py`
 - Packet CSV analyzer: `monitoring/packet_analyzer.py`
 - Capture directory: `data/captures/`
+- Manual inspection: Wireshark opens saved `.pcapng` files packet by packet.
+- Automated summary: TShark exports selected fields to CSV, which NetScope summarizes as packet counts, TCP handshake observations, suspected retransmissions, and ACK RTT.
 
 ## Packet capture workflow
 
@@ -116,10 +146,10 @@ If `tshark` is installed and available on your `PATH`, list capture interfaces:
 python -m monitoring.capture --list-interfaces
 ```
 
-Capture 15 seconds of TCP echo traffic, replacing `1` with the loopback interface identifier returned above:
+Capture 15 seconds of TCP echo traffic. Use the identifier reported for `NPF_Loopback`; it is currently interface `9` on this computer:
 
 ```powershell
-python -m monitoring.capture --capture .\data\captures\tcp_echo.pcapng --interface 1 --capture-filter "tcp port 5001" --duration 15
+python -m monitoring.capture --capture .\data\captures\tcp_echo.pcapng --interface 9 --capture-filter "tcp port 5001" --duration 15
 ```
 
 Export selected packet fields to CSV and summarize them:
@@ -128,6 +158,16 @@ Export selected packet fields to CSV and summarize them:
 python -m monitoring.capture --export .\data\captures\tcp_echo.pcapng --output .\data\captures\tcp_echo_observations.csv --display-filter "tcp.port == 5001"
 python -m monitoring.packet_analyzer .\data\captures\tcp_echo_observations.csv
 ```
+
+Use matching filters for each service:
+
+| Service | Capture filter | Display filter | Suggested export |
+| --- | --- | --- | --- |
+| TCP echo | `tcp port 5001` | `tcp.port == 5001` | `tcp_echo_export.csv` |
+| TCP file transfer | `tcp port 5002` | `tcp.port == 5002` | `tcp_file_transfer.csv` |
+| UDP lookup | `udp port 5003` | `udp.port == 5003` | `udp_lookup.csv` |
+
+The capture type and its display filter must match. For example, exporting a TCP echo capture with `udp.port == 5003` returns no packet rows.
 
 If `tshark` is unavailable, use the manual Wireshark workflow above. The project still works normally; only optional capture automation is unavailable.
 
@@ -213,6 +253,8 @@ The test suite uses real loopback sockets and verifies:
 - known and unknown UDP lookup results;
 - file content preservation and SHA-256 integrity verification;
 - successful handling of five concurrent TCP clients.
+
+For all copy-paste service, failure, capture, export, and Wireshark commands, see [TESTING.md](TESTING.md).
 
 ## Planned extensions
 

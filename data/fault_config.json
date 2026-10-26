@@ -1,0 +1,6 @@
+{
+  "delay_ms": 0,
+  "udp_drop_probability": 0.0,
+  "wrong_lookup": false,
+  "tcp_disconnect": false
+}

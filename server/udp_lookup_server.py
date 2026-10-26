@@ -12,6 +12,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from monitoring.logger import MetricsLogger
+from server.fault_injector import FaultInjector
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5003
@@ -31,6 +32,7 @@ class UDPLookupServer:
     def __init__(
         self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
         records: dict[str, str] | None = None, logger: MetricsLogger | None = None,
+        fault_injector: FaultInjector | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -38,6 +40,7 @@ class UDPLookupServer:
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
         self.logger = logger
+        self.fault_injector = fault_injector or FaultInjector()
 
     @property
     def address(self) -> tuple[str, int]:
@@ -61,16 +64,30 @@ class UDPLookupServer:
                 except OSError:
                     break
                 domain = data.decode("utf-8", errors="replace").strip().lower()
-                answer = self.records.get(domain, "NOT_FOUND")
                 start = time.perf_counter()
                 request_id = str(uuid.uuid4())
+                settings = self.fault_injector.settings()
+                fault_type = self.fault_injector.fault_type(settings, "lookup")
+                self.fault_injector.apply_delay(settings)
+                if self.fault_injector.should_drop_udp_response(settings):
+                    if self.logger:
+                        self.logger.log(
+                            request_id=request_id, actor="server", protocol="UDP", service="lookup",
+                            status="no_response", response_ms=round((time.perf_counter() - start) * 1000, 3),
+                            bytes_transferred=len(data), client_id="", fault_type="udp_response_drop",
+                            fault_enabled=True,
+                        )
+                    print(f"Lookup dropped by fault injector: {domain or '<empty>'}", flush=True)
+                    continue
+                answer = self.fault_injector.resolve_lookup(domain, self.records, settings)
                 try:
                     server.sendto(answer.encode("utf-8"), peer)
                     if self.logger:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="UDP", service="lookup",
                             status="success", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="",
+                            bytes_transferred=len(data), client_id="", fault_type=fault_type,
+                            fault_enabled=settings.enabled,
                         )
                 except OSError as error:
                     if self.logger:
@@ -78,6 +95,7 @@ class UDPLookupServer:
                             request_id=request_id, actor="server", protocol="UDP", service="lookup",
                             status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
                             bytes_transferred=len(data), client_id="", error_type=type(error).__name__,
+                            fault_type=fault_type, fault_enabled=settings.enabled,
                         )
                     continue
                 print(f"Lookup: {domain or '<empty>'} -> {answer}", flush=True)

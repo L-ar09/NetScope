@@ -10,6 +10,7 @@ import uuid
 from collections.abc import Callable
 
 from monitoring.logger import MetricsLogger
+from server.fault_injector import FaultInjector
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5001
@@ -19,12 +20,16 @@ BUFFER_SIZE = 4096
 class TCPEchoServer:
     """Small stoppable TCP echo server suitable for local experiments and tests."""
 
-    def __init__(self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, logger: MetricsLogger | None = None) -> None:
+    def __init__(
+        self, host: str = DEFAULT_HOST, port: int = DEFAULT_PORT,
+        logger: MetricsLogger | None = None, fault_injector: FaultInjector | None = None,
+    ) -> None:
         self.host = host
         self.port = port
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
         self.logger = logger
+        self.fault_injector = fault_injector or FaultInjector()
 
     @property
     def address(self) -> tuple[str, int]:
@@ -64,13 +69,26 @@ class TCPEchoServer:
                     return
                 start = time.perf_counter()
                 request_id = str(uuid.uuid4())
+                settings = self.fault_injector.settings()
+                fault_type = self.fault_injector.fault_type(settings, "echo")
                 try:
+                    self.fault_injector.apply_delay(settings)
+                    if settings.tcp_disconnect:
+                        if self.logger:
+                            self.logger.log(
+                                request_id=request_id, actor="server", protocol="TCP", service="echo",
+                                status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
+                                bytes_transferred=len(data), client_id="", fault_type="tcp_disconnect",
+                                fault_enabled=True, error_type="simulated_disconnect",
+                            )
+                        return
                     connection.sendall(data)
                     if self.logger:
                         self.logger.log(
                             request_id=request_id, actor="server", protocol="TCP", service="echo",
                             status="success", response_ms=round((time.perf_counter() - start) * 1000, 3),
-                            bytes_transferred=len(data), client_id="",
+                            bytes_transferred=len(data), client_id="", fault_type=fault_type,
+                            fault_enabled=settings.enabled,
                         )
                 except OSError as error:
                     if self.logger:
@@ -78,6 +96,7 @@ class TCPEchoServer:
                             request_id=request_id, actor="server", protocol="TCP", service="echo",
                             status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
                             bytes_transferred=len(data), client_id="", error_type=type(error).__name__,
+                            fault_type=fault_type, fault_enabled=settings.enabled,
                         )
                     return
 

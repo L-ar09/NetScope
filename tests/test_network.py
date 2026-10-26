@@ -14,9 +14,11 @@ from client.tcp_file_client import transfer_file
 from client.tcp_echo_client import echo
 from client.udp_lookup_client import lookup
 from monitoring.logger import MetricsLogger
+from monitoring.diagnosis import diagnose
 from monitoring.metrics import load_metrics, summarize
 from monitoring.packet_analyzer import load_packet_observations, summarize_packets
 from server.tcp_echo_server import TCPEchoServer
+from server.fault_injector import FaultInjector
 from server.tcp_file_server import TCPFileServer, file_hash
 from server.udp_lookup_server import UDPLookupServer
 
@@ -155,3 +157,51 @@ def test_packet_export_summary_counts_handshake_udp_and_retransmission() -> None
     assert summary["tcp_syn_ack_packets"] == 1
     assert summary["suspected_tcp_retransmissions"] == 1
     assert summary["average_tcp_ack_rtt_ms"] == 3.0
+
+
+def test_wrong_lookup_fault_returns_documentation_address() -> None:
+    directory = artifact_directory("wrong_lookup")
+    config = directory / "fault_config.json"
+    config.write_text('{"wrong_lookup": true}', encoding="utf-8")
+    server = UDPLookupServer(port=0, fault_injector=FaultInjector(config))
+    ready = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, args=(lambda _: ready.set(),), daemon=True)
+    thread.start()
+    assert ready.wait(2), "UDP server did not start"
+    try:
+        answer, _ = lookup("netscope.local", *server.address)
+        assert answer == "192.0.2.99"
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_udp_drop_fault_causes_timeout_and_server_evidence() -> None:
+    directory = artifact_directory("udp_drop")
+    config = directory / "fault_config.json"
+    config.write_text('{"udp_drop_probability": 1.0}', encoding="utf-8")
+    log_path = directory / "metrics.csv"
+    logger = MetricsLogger(log_path)
+    server = UDPLookupServer(
+        port=0, logger=logger, fault_injector=FaultInjector(config, random_value=lambda: 0.0)
+    )
+    ready = threading.Event()
+    thread = threading.Thread(target=server.serve_forever, args=(lambda _: ready.set(),), daemon=True)
+    thread.start()
+    assert ready.wait(2), "UDP server did not start"
+    try:
+        with pytest.raises(TimeoutError):
+            lookup("netscope.local", *server.address, timeout=0.05, logger=logger)
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+    rows = load_metrics(log_path)
+    assert any(row["fault_type"] == "udp_response_drop" for row in rows)
+    findings = diagnose(rows)
+    assert any(finding["probable_cause"] == "Configured simulated UDP response drop." for finding in findings)
+
+
+def test_diagnosis_does_not_claim_timeout_is_packet_loss() -> None:
+    findings = diagnose([{"actor": "client", "service": "lookup", "status": "timeout", "fault_type": "none"}])
+    assert "packet loss is not proven" in findings[0]["probable_cause"]

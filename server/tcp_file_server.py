@@ -14,6 +14,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from monitoring.logger import MetricsLogger
+from server.fault_injector import FaultInjector
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 5002
@@ -67,6 +68,7 @@ class TCPFileServer:
         port: int = DEFAULT_PORT,
         upload_dir: Path = DEFAULT_UPLOAD_DIR,
         logger: MetricsLogger | None = None,
+        fault_injector: FaultInjector | None = None,
     ) -> None:
         self.host = host
         self.port = port
@@ -74,6 +76,7 @@ class TCPFileServer:
         self._socket: socket.socket | None = None
         self._stopped = threading.Event()
         self.logger = logger
+        self.fault_injector = fault_injector or FaultInjector()
 
     @property
     def address(self) -> tuple[str, int]:
@@ -128,6 +131,19 @@ class TCPFileServer:
                 if len(expected_hash) != 64:
                     raise ValueError("Invalid SHA-256 digest")
 
+                settings = self.fault_injector.settings()
+                fault_type = self.fault_injector.fault_type(settings, "file_transfer")
+                self.fault_injector.apply_delay(settings)
+                if settings.tcp_disconnect:
+                    if self.logger:
+                        self.logger.log(
+                            request_id=request_id, actor="server", protocol="TCP", service="file_transfer",
+                            status="failed", response_ms=round((time.perf_counter() - start) * 1000, 3),
+                            bytes_transferred=0, client_id="", fault_type="tcp_disconnect",
+                            fault_enabled=True, error_type="simulated_disconnect",
+                        )
+                    return
+
                 destination = self._destination_for(filename)
                 digest = hashlib.sha256()
                 remaining = file_size
@@ -157,6 +173,7 @@ class TCPFileServer:
                         response_ms=round(elapsed_seconds * 1000, 3), bytes_transferred=file_size,
                         throughput_mbps=round((file_size * 8 / elapsed_seconds) / 1_000_000, 6) if elapsed_seconds else 0,
                         client_id="", error_type="" if integrity_ok else "integrity_failed",
+                        fault_type=fault_type, fault_enabled=settings.enabled,
                     )
                 print(f"Received {destination.name} ({file_size} bytes) from {peer[0]}:{peer[1]}", flush=True)
             except (ConnectionError, OSError, ValueError, json.JSONDecodeError, struct.error) as error:
